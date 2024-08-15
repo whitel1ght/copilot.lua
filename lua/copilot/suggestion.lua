@@ -311,7 +311,7 @@ end
 ---@param data copilot_get_completions_data
 local function handle_trigger_request(err, data)
   if err then
-    print(err)
+    -- print(err)
   end
   local ctx = get_ctx()
   ctx.suggestions = data and data.completions or {}

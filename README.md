@@ -8,6 +8,7 @@ This plugin is the pure lua replacement for [github/copilot.vim](https://github.
 While using `copilot.vim`, for the first time since I started using neovim my laptop began to overheat. Additionally,
 I found the large chunks of ghost text moving around my code, and interfering with my existing cmp ghost text disturbing.
 As lua is far more efficient and makes things easier to integrate with modern plugins, this repository was created.
+
 </details>
 
 ## Install
@@ -21,7 +22,22 @@ use { "zbirenbaum/copilot.lua" }
 
 ### Authentication
 
+You can authenticate using one of the following methods:
+
+#### Permanent sign-in (Recommended)
+
 Once copilot is running, run `:Copilot auth` to start the authentication process.
+
+#### Token
+
+Get a token from the github cli using:
+
+```sh
+gh auth token
+```
+
+Set either the environment variable `GITHUB_COPILOT_TOKEN` or `GH_COPILOT_TOKEN` to that token.
+Note that if you have the variable set, even empty, the LSP will attempt to use it to log in.
 
 ## Setup and Configuration
 
@@ -57,7 +73,7 @@ require('copilot').setup({
       open = "<M-CR>"
     },
     layout = {
-      position = "bottom", -- | top | left | right
+      position = "bottom", -- | top | left | right | horizontal | vertical
       ratio = 0.4
     },
   },
@@ -86,7 +102,21 @@ require('copilot').setup({
     cvs = false,
     ["."] = false,
   },
+  logger = {
+    file = vim.fn.stdpath("log") .. "/copilot-lua.log",
+    file_log_level = vim.log.levels.OFF,
+    print_log_level = vim.log.levels.WARN,
+    trace_lsp = "off", -- "off" | "messages" | "verbose"
+    trace_lsp_progress = false,
+    log_lsp_messages = false,
+  },
   copilot_node_command = 'node', -- Node.js version must be > 18.x
+  workspace_folders = {},
+  copilot_model = "",  -- Current LSP default is gpt-35-turbo, supports gpt-4o-copilot
+  root_dir = function()
+    return vim.fs.dirname(vim.fs.find(".git", { upward = true })[1])
+  end,
+  should_attach = nil, -- type is fun(bufnr: integer, bufname: string): boolean
   server_opts_overrides = {},
 })
 ```
@@ -105,20 +135,23 @@ require("copilot.panel").accept()
 require("copilot.panel").jump_next()
 require("copilot.panel").jump_prev()
 require("copilot.panel").open({position, ratio})
+require("copilot.panel").toggle()
 require("copilot.panel").refresh()
 ```
 
 ### suggestion
 
-When `auto_trigger` is `true`, copilot starts suggesting as soon as you enter insert mode. 
-
-When `auto_trigger` is `false`, use the `next` or `prev` keymap to trigger copilot suggestion.
+When `auto_trigger` is `true`, copilot starts suggesting as soon as you enter insert mode.
+When `auto_trigger` is `false`, use the `next`, `prev` or `accept` keymap to trigger copilot suggestion.
 
 To toggle auto trigger for the current buffer, use `require("copilot.suggestion").toggle_auto_trigger()`.
 
 Copilot suggestion is automatically hidden when `popupmenu-completion` is open. In case you use a custom
 menu for completion, you can set the `copilot_suggestion_hidden` buffer variable to `true` to have the
-same behavior. For example, with `nvim-cmp`:
+same behavior.
+
+<details>
+<summary>Example using nvim-cmp</summary>
 
 ```lua
 cmp.event:on("menu_opened", function()
@@ -129,6 +162,30 @@ cmp.event:on("menu_closed", function()
   vim.b.copilot_suggestion_hidden = false
 end)
 ```
+
+</details>
+
+<details>
+<summary>Example using blink.cmp</summary>
+
+```lua
+vim.api.nvim_create_autocmd("User", {
+  pattern = "BlinkCmpMenuOpen",
+  callback = function()
+    vim.b.copilot_suggestion_hidden = true
+  end,
+})
+
+vim.api.nvim_create_autocmd("User", {
+  pattern = "BlinkCmpMenuClose",
+  callback = function()
+    vim.b.copilot_suggestion_hidden = false
+  end,
+})
+
+```
+
+</details>
 
 The `copilot.suggestion` module exposes the following functions:
 
@@ -177,6 +234,39 @@ require("copilot").setup {
 }
 ```
 
+### logger
+
+Logs will be written to the `file` for anything of `file_log_level` or higher.
+Logs will be printed to NeoVim (using `notify`) for anything of `print_log_level` or higher.
+To turn either off, simply set its level to `vim.log.levels.OFF`.
+File logging is done asynchronously to minimize performance impacts, however there is still some overhead.
+
+Log levels used are the ones defined in `vim.log`:
+
+```lua
+vim.log = {
+  levels = {
+    TRACE = 0,
+    DEBUG = 1,
+    INFO = 2,
+    WARN = 3,
+    ERROR = 4,
+    OFF = 5,
+  },
+}
+```
+
+`trace_lsp` controls logging of LSP trace messages (`$/logTrace`) can either be:
+
+- `off`
+- `messages` which will output the LSP messages
+- `verbose` which adds additonal information to the message.
+
+When `trace_lsp_progress` is true, LSP progress messages (`$/progress`) will also be logged.
+When `log_lsp_messages` is true, LSP log messages (`window/logMessage`) events will be logged.
+
+Careful turning on all logging features as the log files may get very large over time, and are not pruned by the application.
+
 ### copilot_node_command
 
 Use this field to provide the path to a specific node version such as one installed by nvm. Node.js version must be 18.x or newer.
@@ -206,6 +296,47 @@ require("copilot").setup {
       }
     },
   }
+}
+```
+
+### workspace_folders
+
+Workspace folders improve Copilot's suggestions.
+By default, the root_dir is used as a wokspace_folder.
+
+Additional folders can be added through the configuration as such:
+
+```lua
+workspace_folders = {
+  "/home/user/gits",
+  "/home/user/projects",
+}
+```
+
+They can also be added runtime, using the command `:Copilot workspace add [folderpath]` where `[folderpath]` is the workspace folder.
+
+### root_dir
+
+This allows changing the function that gets the root folder, the default looks for a parent folder that contains the folder `.git`.
+If none is found, it will use the current working directory.
+
+### should_attach
+
+This function is called to determine if copilot should attach to the buffer or not.
+It is useful if you would like to go beyond the filetypes and have more control over when copilot should attach.
+Since this happens before attaching to the buffer, it is good to prevent Copilot from reading sensitive files.
+
+An example of this would be:
+
+```lua
+require("copilot").setup {
+  should_attach = function(_, bufname)
+    if string.match(bufname, "env") then
+      return false
+    end
+
+    return true
+  end
 }
 ```
 

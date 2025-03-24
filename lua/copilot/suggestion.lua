@@ -3,9 +3,10 @@ local c = require("copilot.client")
 local config = require("copilot.config")
 local hl_group = require("copilot.highlight").group
 local util = require("copilot.util")
+local logger = require("copilot.logger")
 
 local _, has_nvim_0_10_x = pcall(function()
-  return vim.version().minor == 10
+  return vim.version().minor >= 10
 end)
 
 local mod = {}
@@ -50,15 +51,18 @@ end
 local function get_ctx(bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   local ctx = copilot.context[bufnr]
+  logger.trace("suggestion context", ctx)
   if not ctx then
     ctx = {}
     copilot.context[bufnr] = ctx
+    logger.trace("suggestion new context", ctx)
   end
   return ctx
 end
 
 ---@param ctx copilot_suggestion_context
 local function reset_ctx(ctx)
+  logger.trace("suggestion reset context", ctx)
   ctx.first = nil
   ctx.cycling = nil
   ctx.cycling_callbacks = nil
@@ -148,6 +152,7 @@ end
 
 local function stop_timer()
   if copilot._copilot_timer then
+    logger.trace("suggestion stop timer")
     vim.fn.timer_stop(copilot._copilot_timer)
     copilot._copilot_timer = nil
   end
@@ -171,28 +176,34 @@ end
 
 ---@param ctx? copilot_suggestion_context
 local function cancel_inflight_requests(ctx)
+  logger.trace("suggestion cancel inflight requests", ctx)
   ctx = ctx or get_ctx()
 
   with_client(function(client)
     if ctx.first then
       client.cancel_request(ctx.first)
       ctx.first = nil
+      logger.trace("suggestion cancel first request")
     end
     if ctx.cycling then
       client.cancel_request(ctx.cycling)
       ctx.cycling = nil
+      logger.trace("suggestion cancel cycling request")
     end
   end)
 end
 
 local function clear_preview()
+  logger.trace("suggestion clear preview")
   vim.api.nvim_buf_del_extmark(0, copilot.ns_id, copilot.extmark_id)
 end
 
 ---@param ctx? copilot_suggestion_context
 ---@return copilot_get_completions_data_completion|nil
 local function get_current_suggestion(ctx)
+  logger.trace("suggestion get current suggestion", ctx)
   ctx = ctx or get_ctx()
+  logger.trace("suggestion current suggestion", ctx)
 
   local ok, choice = pcall(function()
     if
@@ -228,6 +239,7 @@ end
 ---@param ctx? copilot_suggestion_context
 local function update_preview(ctx)
   ctx = ctx or get_ctx()
+  logger.trace("suggestion update preview", ctx)
 
   local suggestion = get_current_suggestion(ctx)
   local displayLines = suggestion and vim.split(suggestion.displayText, "\n", { plain = true }) or {}
@@ -285,6 +297,7 @@ end
 
 ---@param ctx? copilot_suggestion_context
 local function clear(ctx)
+  logger.trace("suggestion clear", ctx)
   ctx = ctx or get_ctx()
   stop_timer()
   cancel_inflight_requests(ctx)
@@ -294,6 +307,7 @@ end
 
 ---@param callback fun(err: any|nil, data: copilot_get_completions_data): nil
 local function complete(callback)
+  logger.trace("suggestion complete")
   stop_timer()
 
   local ctx = get_ctx()
@@ -311,8 +325,9 @@ end
 ---@param data copilot_get_completions_data
 local function handle_trigger_request(err, data)
   if err then
-    -- print(err)
+    -- logger.error(err)
   end
+  logger.trace("suggestion handle trigger request", data)
   local ctx = get_ctx()
   ctx.suggestions = data and data.completions or {}
   ctx.choice = 1
@@ -321,10 +336,12 @@ local function handle_trigger_request(err, data)
 end
 
 local function trigger(bufnr, timer)
+  logger.trace("suggestion trigger", bufnr)
   local _timer = copilot._copilot_timer
   copilot._copilot_timer = nil
 
-  if bufnr ~= vim.api.nvim_get_current_buf() or timer ~= _timer or vim.fn.mode() ~= "i" then
+  if bufnr ~= vim.api.nvim_get_current_buf() or (_timer ~= nil and timer ~= _timer) or vim.fn.mode() ~= "i" then
+    logger.trace("suggestion trigger, not in insert mode")
     return
   end
 
@@ -333,11 +350,12 @@ end
 
 ---@param ctx copilot_suggestion_context
 local function get_suggestions_cycling_callback(ctx, err, data)
+  logger.trace("suggestion get suggestions cycling callback", data)
   local callbacks = ctx.cycling_callbacks or {}
   ctx.cycling_callbacks = nil
 
   if err then
-    print(err)
+    logger.error(err)
     return
   end
 
@@ -366,6 +384,8 @@ end
 ---@param callback fun(ctx: copilot_suggestion_context): nil
 ---@param ctx copilot_suggestion_context
 local function get_suggestions_cycling(callback, ctx)
+  logger.trace("suggestion get suggestions cycling", ctx)
+
   if ctx.cycling_callbacks then
     table.insert(ctx.cycling_callbacks, callback)
     return
@@ -402,23 +422,32 @@ local function advance(count, ctx)
 end
 
 local function schedule(ctx)
-  if not is_enabled() then
+  if not is_enabled() or not c.initialized then
     clear()
     return
+  end
+  logger.trace("suggestion schedule", ctx)
+
+  if copilot._copilot_timer then
+    cancel_inflight_requests(ctx)
+    stop_timer()
   end
 
   update_preview(ctx)
   local bufnr = vim.api.nvim_get_current_buf()
   copilot._copilot_timer = vim.fn.timer_start(copilot.debounce, function(timer)
+    logger.trace("suggestion schedule timer", bufnr)
     trigger(bufnr, timer)
   end)
 end
 
 function mod.next()
   local ctx = get_ctx()
+  logger.trace("suggestion next", ctx)
 
   -- no suggestion request yet
   if not ctx.first then
+    logger.trace("suggestion next, no first request")
     schedule(ctx)
     return
   end
@@ -430,9 +459,11 @@ end
 
 function mod.prev()
   local ctx = get_ctx()
+  logger.trace("suggestion prev", ctx)
 
   -- no suggestion request yet
   if not ctx.first then
+    logger.trace("suggestion prev, no first request", ctx)
     schedule(ctx)
     return
   end
@@ -445,6 +476,14 @@ end
 ---@param modifier? (fun(suggestion: copilot_get_completions_data_completion): copilot_get_completions_data_completion)
 function mod.accept(modifier)
   local ctx = get_ctx()
+  logger.trace("suggestion accept", ctx)
+
+  -- no suggestion request yet
+  if not ctx.first then
+    logger.trace("suggestion accept, not first request", ctx)
+    schedule(ctx)
+    return
+  end
 
   local suggestion = get_current_suggestion(ctx)
   if not suggestion or vim.fn.empty(suggestion.text) == 1 then
@@ -459,7 +498,7 @@ function mod.accept(modifier)
   end
 
   with_client(function(client)
-    local ok, err = pcall(function()
+    local ok, _ = pcall(function()
       api.notify_accepted(
         client,
         { uuid = suggestion.uuid, acceptedLength = util.strutf16len(suggestion.text) },
@@ -467,10 +506,7 @@ function mod.accept(modifier)
       )
     end)
     if not ok then
-      vim.notify(
-        table.concat({ "[Copilot] failed to notify_accepted for: " .. suggestion.text, "Error: " .. err }, "\n\n"),
-        vim.log.levels.ERROR
-      )
+      logger.error(string.format("failed to notify_accepted for: %s, Error: %s", suggestion.text))
     end
   end)
 
@@ -484,14 +520,20 @@ function mod.accept(modifier)
   end
 
   -- Hack for 'autoindent', makes the indent persist. Check `:help 'autoindent'`.
-  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Space><Left><Del>", true, false, true), "n", false)
-  vim.lsp.util.apply_text_edits({ { range = range, newText = newText } }, vim.api.nvim_get_current_buf(), "utf-16")
-  -- Put cursor at the end of current line.
-  local cursor_keys = "<End>"
-  if has_nvim_0_10_x then
-    cursor_keys = string.rep("<Down>", #vim.split(newText, "\n", { plain = true }) - 1) .. cursor_keys
-  end
-  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(cursor_keys, true, false, true), "n", false)
+  vim.schedule_wrap(function()
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Space><Left><Del>", true, false, true), "n", false)
+    local bufnr = vim.api.nvim_get_current_buf()
+    local encoding = vim.api.nvim_get_option_value("fileencoding", { buf = bufnr }) ~= ""
+        and vim.api.nvim_get_option_value("fileencoding", { buf = bufnr })
+      or vim.api.nvim_get_option_value("encoding", { scope = "global" })
+    vim.lsp.util.apply_text_edits({ { range = range, newText = newText } }, bufnr, encoding)
+    -- Put cursor at the end of current line.
+    local cursor_keys = "<End>"
+    if has_nvim_0_10_x then
+      cursor_keys = string.rep("<Down>", #vim.split(newText, "\n", { plain = true }) - 1) .. cursor_keys
+    end
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(cursor_keys, true, false, true), "n", false)
+  end)()
 end
 
 function mod.accept_word()
@@ -558,6 +600,7 @@ end
 
 local function on_insert_enter()
   if should_auto_trigger() then
+    logger.trace("suggestion on insert enter")
     schedule()
   end
 end
@@ -571,6 +614,7 @@ end
 local function on_cursor_moved_i()
   local ctx = get_ctx()
   if copilot._copilot_timer or ctx.params or should_auto_trigger() then
+    logger.trace("suggestion on cursor moved insert")
     schedule(ctx)
   end
 end
@@ -578,6 +622,7 @@ end
 local function on_text_changed_p()
   local ctx = get_ctx()
   if not copilot.hide_during_completion and (copilot._copilot_timer or ctx.params or should_auto_trigger()) then
+    logger.trace("suggestion on text changed pum")
     schedule(ctx)
   end
 end
@@ -672,7 +717,6 @@ function mod.setup()
   create_autocmds()
 
   copilot.debounce = opts.debounce
-
   copilot.setup_done = true
 end
 

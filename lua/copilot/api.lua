@@ -1,3 +1,4 @@
+local logger = require("copilot.logger")
 local mod = {}
 
 ---@param callback? fun(err: any|nil, data: table, ctx: table): nil
@@ -5,6 +6,7 @@ local mod = {}
 ---@return table data
 ---@return table ctx
 function mod.request(client, method, params, callback)
+  logger.trace("api request:", method, params)
   -- hack to convert empty table to json object,
   -- empty table is convert to json array by default.
   params._ = true
@@ -25,13 +27,15 @@ end
 
 ---@return boolean sent
 function mod.notify(client, method, params)
+  logger.trace("api notify:", method, params)
   return client.notify(method, params)
 end
 
 ---@alias copilot_editor_info { name: string, version: string }
 ---@alias copilot_editor_plugin_info { name: string, version: string }
+---@alias copilot_auth_provider { url: string }
 ---@alias copilot_network_proxy { host: string, port: integer, username?: string, password?: string, rejectUnauthorized?: boolean }
----@alias copilot_set_editor_info_params { editorInfo: copilot_editor_info, editorPluginInfo: copilot_editor_plugin_info, editorConfiguration: copilot_editor_configuration, networkProxy?: copilot_network_proxy }
+---@alias copilot_set_editor_info_params { editorInfo: copilot_editor_info, editorPluginInfo: copilot_editor_plugin_info, editorConfiguration: copilot_editor_configuration, networkProxy?: copilot_network_proxy, authProvider?: copilot_auth_provider }
 
 ---@param params copilot_set_editor_info_params
 ---@return any|nil err
@@ -47,6 +51,13 @@ end
 ---@param params copilot_notify_change_configuration_params
 function mod.notify_change_configuration(client, params)
   return mod.notify(client, "notifyChangeConfiguration", params)
+end
+
+---@alias copilot_nofify_set_trace_params { value: 'off'|'messages'|'verbose' }
+
+---@param params copilot_nofify_set_trace_params
+function mod.notify_set_trace(client, params)
+  return mod.notify(client, "$/setTrace", params)
 end
 
 ---@alias copilot_check_status_params { options?: { localChecksOnly?: boolean } }
@@ -227,14 +238,27 @@ mod.handlers = {
   statusNotification = status.handlers.statusNotification,
   ---@param result copilot_open_url_data
   ["copilot/openURL"] = function(_, result)
-    vim.api.nvim_echo({
-      { "copilot/openURL" },
-      { vim.inspect({ _, result }) },
-      { "\n", "NONE" },
-    }, true, {})
-    error("not implemented: copilot.api.handlers['copilot/openURL']")
+    local success, _ = pcall(vim.ui.open, result.target)
+    if not success then
+      if vim.ui.open ~= nil then
+        vim.api.nvim_echo({
+          { "copilot/openURL" },
+          { vim.inspect({ _, result }) },
+          { "\n", "NONE" },
+        }, true, {})
+        error("Unsupported OS: vim.ui.open exists but failed to execute.")
+      else
+        vim.api.nvim_echo({
+          { "copilot/openURL" },
+          { vim.inspect({ _, result }) },
+          { "\n", "NONE" },
+        }, true, {})
+        error("Unsupported Version: vim.ui.open requires Neovim > 0.10")
+      end
+    end
   end,
 }
+
 mod.panel = panel
 mod.status = status
 
